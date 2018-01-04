@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright © 2017 Christopher N. Lawrence <lordsutch@gmail.com>
+# Copyright © 2017–18 Christopher N. Lawrence <lordsutch@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
@@ -38,6 +38,9 @@ import random
 from scipy.optimize import curve_fit, minimize
 
 from haversine import haversine
+
+import multiprocessing as mp
+#import multiprocessing.dummy as mp
 
 ECEF = pyproj.Proj('+proj=geocent +datum=WGS84 +units=m +no_defs')
 LLA = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
@@ -210,7 +213,6 @@ def check_sanity(guess, readings):
         print(readings)
         print(guess)
         print(resid)
-        sys.exit(1)
 
 icon_color = {25: 'red', 41: 'lightred', 26: 'darkred',
               17: 'lightgreen', 12: 'green', 2: 'green',
@@ -219,6 +221,66 @@ icon_color = {25: 'red', 41: 'lightred', 26: 'darkred',
 band_color = {25: 'red', 41: '#FFC0CB', 26: 'maroon',
               17: 'lime', 12: 'green', 2: 'green',
               5: 'purple'}
+
+def process_tower(tower, readings):
+    mcc, mnc, eNodeB = int(tower[0]), int(tower[1]), tower[2]
+
+    # Leave out international towers
+    if mcc not in (310, 311, 312):
+        return None
+
+    # XXX Testing code
+    # if int(eNodeB, 16) > 0x00CFFF:
+    #     break
+
+    band = int(readings.band.mode().iloc[0])
+    bands = '/'.join([f'{x}' for x in sorted(
+        readings.band.drop_duplicates().values.astype(int))])
+    print(mcc, mnc, eNodeB, bands)
+
+    readings = readings[['latitude', 'longitude', 'altitude',
+                         'estDistance', 'band']].drop_duplicates()
+    r, c = readings.shape
+    if r < 3:
+        print(f'Only {r} observation(s); skipping.')
+        return None
+
+    loc = find_tower(readings)
+
+    check_sanity(loc, readings)
+
+    icolor = icon_color.get(band, 'blue')
+
+    #icon = folium.map.Icon(icon='signal', color=color)
+    popup = f'{mcc}-{mnc} {eNodeB}<br>Band {bands}'
+
+    points = {}
+    maxval = {}
+
+    tmap = folium.Map(control_scale=True)
+
+    tmap.fit_bounds([[min(loc[0], readings.latitude.min()),
+                      min(loc[1], readings.longitude.min())],
+                     [max(loc[0], readings.latitude.max()),
+                      max(loc[1], readings.longitude.max())]])
+
+    marker = folium.Marker(loc, popup=popup,
+                           icon=folium.map.Icon(icon='signal', color=icolor))
+    marker.add_to(tmap)
+
+    for index, row in readings.iterrows():
+        color = band_color.get(row.band, 'blue')
+
+        points.setdefault(color, []).append( (row.latitude,
+                                              row.longitude) )
+
+    for color, pts in points.items():
+        folium.plugins.HeatMap(pts, radius=10, blur=2,
+                               gradient={1: color}).add_to(tmap)
+
+    tmap.save(f'tower-{mcc}-{mnc}-{eNodeB}.html')
+
+    return (loc, icolor, popup)
 
 def plotcells(*files):
     cellinfo = pd.DataFrame()
@@ -246,103 +308,45 @@ def plotcells(*files):
 
     towers = cellinfo.groupby(by=('mcc', 'mnc', 'eNodeB'))
 
-    lat1, lon1 = (-90, -200)
-    lat2, lon2 = (90, 200)
+    lat1, lon1 = (90, 200)
+    lat2, lon2 = (-90, -200)
 
-    tower_icons = []
     tower_locations = []
+    tower_icons = []
     tower_popups = []
 
-    for tower, readings in towers:
-        mcc, mnc, eNodeB = int(tower[0]), int(tower[1]), tower[2]
+    with mp.Pool() as p:
+        res = [p.apply_async(process_tower, tower) for tower in towers]
+        for result in res:
+            tower = result.get()
+            #print(result, tower)
+            if tower is not None:
+                loc, color, popup = tower
+                icon = folium.map.Icon(icon='signal', color=color)
+                
+                tower_locations.append(loc)
+                tower_icons.append(icon)
+                tower_popups.append(popup)
 
-        # Leave out international towers
-        if mcc not in (310, 311, 312):
-            continue
-
-        # XXX Testing code
-        # if int(eNodeB, 16) > 0x00CFFF:
-        #     break
-
-        band = int(readings.band.mode().iloc[0])
-        bands = '/'.join([f'{x}' for x in sorted(readings.band.drop_duplicates().values.astype(int))])
-        print(mcc, mnc, eNodeB, bands)
-
-        readings = readings[['latitude', 'longitude', 'altitude',
-                             'estDistance', 'band']].drop_duplicates()
-        r, c = readings.shape
-        if r < 3:
-            print(f'Only {r} observation(s); skipping.')
-            continue
-
-        #dists = readings.estDistance.drop_duplicates()
-        #c = dists.shape[0]
-        # if c < 2:
-        #     print(readings)
-        #     print(f'Only {c} distances; skipping.')
-        #     continue
-
-        loc = find_tower(readings)
-        #print(loc)
-
-        check_sanity(loc, readings)
-
-        color = icon_color.get(band, 'blue')
-        #marker = folium.Marker(loc,
-        #                       popup=f'{mcc}-{mnc} {eNodeB}<br>Band {bands}',
-        #                       icon=folium.map.Icon(icon='signal',
-        #                                            color=color))
-        #marker.add_to(m)
-
-        tower_locations.append(loc)
-        tower_icons.append(folium.map.Icon(icon='signal', color=color))
-        tower_popups.append(f'{mcc}-{mnc} {eNodeB}<br>Band {bands}')
-
-        lat1, lon1 = max(loc[0], lat1), max(loc[1], lon1)
-        lat2, lon2 = min(loc[0], lat2), min(loc[1], lon2)
-
-        points = {}
-        maxval = {}
+                lat1, lon1 = min(loc[0], lat1), min(loc[1], lon1)
+                lat2, lon2 = max(loc[0], lat2), max(loc[1], lon1)
         
-        tmap = folium.Map(control_scale=True)
-
-        tmap.fit_bounds([[min(loc[0], readings.latitude.min()),
-                          min(loc[1], readings.longitude.min())],
-                         [max(loc[0], readings.latitude.max()),
-                          max(loc[1], readings.longitude.max())]])
-        
-        marker = folium.Marker(loc,
-                               popup=f'{mcc}-{mnc} {eNodeB}<br>Band {bands}',
-                               icon=folium.map.Icon(icon='signal',
-                                                    color=color))
-        marker.add_to(tmap)
-
-        for index, row in readings.iterrows():
-            color = band_color.get(row.band, 'blue')
-
-            points.setdefault(color, []).append( (row.latitude,
-                                                  row.longitude) )
-
-        for color, pts in points.items():
-            folium.plugins.HeatMap(pts, radius=10, blur=2,
-                                    gradient={1: color}).add_to(tmap)
-
-        tmap.save(f'tower-{mcc}-{mnc}-{eNodeB}.html')
-
     m = folium.Map(control_scale=True)
     m.fit_bounds([[lat1, lon1], [lat2, lon2]])
     folium.plugins.MarkerCluster(tower_locations, tower_popups,
                                  tower_icons).add_to(m)
     m.save('towers.html')
 
-if __name__ == '__main__':
+def main():
     if len(sys.argv) == 2 and sys.argv[1] == '--test':
         test_find_tower()
-        sys.exit(0)
-
-    if len(sys.argv) > 1:
-        files = sys.argv[1:]
     else:
-        files = glob.glob('./cellinfolte*.csv')
-
-    plotcells(*files)
+        if len(sys.argv) > 1:
+            files = sys.argv[1:]
+        else:
+            files = glob.glob('./cellinfolte*.csv')
+            
+        plotcells(*files)
+        
+if __name__ == '__main__':
+    main()
