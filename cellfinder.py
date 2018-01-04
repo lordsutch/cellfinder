@@ -31,6 +31,7 @@ import glob
 import pyproj
 import sys
 import folium
+import folium.plugins
 import math
 import random
 
@@ -96,12 +97,9 @@ def find_tower_svd(readings, returnAlt=False):
         return (lat, lon)
 
 def find_startpos(readings):
-    #return find_tower_svd(readings)
-
-    row = readings['estDistance'].idxmin()
-    #print(row)
-    dat = readings.loc[row,:]
-    return dat[['latitude', 'longitude']]
+    minval = readings.estDistance.min()
+    rows = readings[readings.estDistance == minval]
+    return (rows.latitude.mean(), rows.longitude.mean())
 
 def distance(x, *p):
     ystar = [haversine(xi, p) for xi in x]
@@ -248,9 +246,13 @@ def plotcells(*files):
 
     towers = cellinfo.groupby(by=('mcc', 'mnc', 'eNodeB'))
 
-    m = folium.Map(control_scale=True)
     lat1, lon1 = (-90, -200)
     lat2, lon2 = (90, 200)
+
+    tower_icons = []
+    tower_locations = []
+    tower_popups = []
+
     for tower, readings in towers:
         mcc, mnc, eNodeB = int(tower[0]), int(tower[1]), tower[2]
 
@@ -258,20 +260,23 @@ def plotcells(*files):
         if mcc not in (310, 311, 312):
             continue
 
+        # XXX Testing code
+        # if int(eNodeB, 16) > 0x00CFFF:
+        #     break
+
         band = int(readings.band.mode().iloc[0])
-        bands = '/'.join(sorted([f'{x}' for x in readings.band.drop_duplicates().values.astype(int)]))
+        bands = '/'.join([f'{x}' for x in sorted(readings.band.drop_duplicates().values.astype(int))])
         print(mcc, mnc, eNodeB, bands)
 
-        readings = readings[[
-            'latitude', 'longitude', 'altitude', 'accuracy', 'estDistance',
-            'band']].drop_duplicates()
+        readings = readings[['latitude', 'longitude', 'altitude',
+                             'estDistance', 'band']].drop_duplicates()
         r, c = readings.shape
         if r < 3:
             print(f'Only {r} observation(s); skipping.')
             continue
 
-        dists = readings.estDistance.drop_duplicates()
-        c = dists.shape[0]
+        #dists = readings.estDistance.drop_duplicates()
+        #c = dists.shape[0]
         # if c < 2:
         #     print(readings)
         #     print(f'Only {c} distances; skipping.')
@@ -283,41 +288,51 @@ def plotcells(*files):
         check_sanity(loc, readings)
 
         color = icon_color.get(band, 'blue')
-        marker = folium.Marker(loc,
-                               popup=f'{mcc}-{mnc} {eNodeB}<br>Band {bands}',
-                               icon=folium.map.Icon(icon='signal',
-                                                    color=color))
-        marker.add_to(m)
+        #marker = folium.Marker(loc,
+        #                       popup=f'{mcc}-{mnc} {eNodeB}<br>Band {bands}',
+        #                       icon=folium.map.Icon(icon='signal',
+        #                                            color=color))
+        #marker.add_to(m)
+
+        tower_locations.append(loc)
+        tower_icons.append(folium.map.Icon(icon='signal', color=color))
+        tower_popups.append(f'{mcc}-{mnc} {eNodeB}<br>Band {bands}')
 
         lat1, lon1 = max(loc[0], lat1), max(loc[1], lon1)
         lat2, lon2 = min(loc[0], lat2), min(loc[1], lon2)
 
+        points = {}
+        maxval = {}
+        
         tmap = folium.Map(control_scale=True)
+
+        tmap.fit_bounds([[min(loc[0], readings.latitude.min()),
+                          min(loc[1], readings.longitude.min())],
+                         [max(loc[0], readings.latitude.max()),
+                          max(loc[1], readings.longitude.max())]])
+        
         marker = folium.Marker(loc,
                                popup=f'{mcc}-{mnc} {eNodeB}<br>Band {bands}',
                                icon=folium.map.Icon(icon='signal',
                                                     color=color))
         marker.add_to(tmap)
+
         for index, row in readings.iterrows():
-            #print(row)
-            lat, lon = row.latitude, row.longitude
             color = band_color.get(row.band, 'blue')
 
-            folium.features.CircleMarker(radius=5,
-                                         location=(lat, lon),
-                                         fill=True,
-                                         #fillOpacity=0.5,
-                                         fillColor=color,
-                                         #stroke=False,
-                                         color=color).add_to(tmap)
+            points.setdefault(color, []).append( (row.latitude,
+                                                  row.longitude) )
 
-        tmap.fit_bounds([(min(loc[0], readings.latitude.min()),
-                          min(loc[1], readings.longitude.min())),
-                         (max(loc[0], readings.latitude.max()),
-                          max(loc[1], readings.longitude.max()))])
+        for color, pts in points.items():
+            folium.plugins.HeatMap(pts, radius=10, blur=2,
+                                    gradient={1: color}).add_to(tmap)
+
         tmap.save(f'tower-{mcc}-{mnc}-{eNodeB}.html')
 
-    m.fit_bounds([(lat1, lon1), (lat2, lon2)])
+    m = folium.Map(control_scale=True)
+    m.fit_bounds([[lat1, lon1], [lat2, lon2]])
+    folium.plugins.MarkerCluster(tower_locations, tower_popups,
+                                 tower_icons).add_to(m)
     m.save('towers.html')
 
 if __name__ == '__main__':
