@@ -42,6 +42,8 @@ from haversine import haversine
 import multiprocessing as mp
 #import multiprocessing.dummy as mp
 
+from sharedtowers import SHARED_TOWERS
+
 ECEF = pyproj.Proj('+proj=geocent +datum=WGS84 +units=m +no_defs')
 LLA = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
 
@@ -223,21 +225,19 @@ band_color = {25: 'red', 41: '#FFC0CB', 26: 'maroon',
               5: 'purple'}
 
 def process_tower(tower, readings):
-    mcc, mnc, eNodeB = int(tower[0]), int(tower[1]), tower[2]
-
-    # Leave out international towers
-    if mcc not in (310, 311, 312):
-        return None
+    eNodeB = tower
 
     # XXX Testing code
     # if int(eNodeB, 16) > 0x00CFFF:
     #     break
 
-    band = int(readings.band.mode().iloc[0])
-    bands = '/'.join([f'{x}' for x in sorted(
-        readings.band.drop_duplicates().values.astype(int))])
-    print(mcc, mnc, eNodeB, bands)
+    bandnums = sorted(readings.band.drop_duplicates().values.astype(int))
+    bands = '/'.join([f'{x}' for x in bandnums])
+    print(eNodeB, bands)
 
+    baseGciList = sorted(readings.eNodeB.drop_duplicates().values)
+    baseGcis = '<br>'.join(baseGciList)
+    
     readings = readings[['latitude', 'longitude', 'altitude',
                          'estDistance', 'band']].drop_duplicates()
     r, c = readings.shape
@@ -249,10 +249,10 @@ def process_tower(tower, readings):
 
     check_sanity(loc, readings)
 
-    icolor = icon_color.get(band, 'blue')
+    icolor = icon_color.get(min(bandnums), 'blue')
 
     #icon = folium.map.Icon(icon='signal', color=color)
-    popup = f'{mcc}-{mnc} {eNodeB}<br>Band {bands}'
+    popup = f'{baseGcis}<br>Band {bands}'
 
     points = {}
     maxval = {}
@@ -278,7 +278,7 @@ def process_tower(tower, readings):
         folium.plugins.HeatMap(pts, radius=10, blur=2,
                                gradient={1: color}).add_to(tmap)
 
-    tmap.save(f'tower-{mcc}-{mnc}-{eNodeB}.html')
+    tmap.save(f'tower-{eNodeB}.html')
 
     return (loc, icolor, popup)
 
@@ -286,6 +286,7 @@ def plotcells(*files):
     cellinfo = pd.DataFrame()
     for infile in files:
         df = pd.read_csv(infile,
+                         #dtype={'mcc' : 'int', 'mnc' : 'int'},
                          usecols=lambda x: x not in ('timestamp',
                                                      'timeSinceEpoch'))
 
@@ -293,20 +294,36 @@ def plotcells(*files):
         df['estDistance'] = df['timingAdvance'].values*149.85
         df.loc[df.band == 41, 'estDistance'] -= 19*149.85
 
+        df.dropna(subset=('estDistance',), inplace=True)
+
+        # Drop zero lat/lon
+        df = df.loc[(df.latitude != 0.0) & (df.longitude != 0.0)]
+        
         df.baseGci = df.baseGci.str.pad(6, fillchar='0')
         df.gci = df.gci.str.pad(8, fillchar='0')
 
-        df['eNodeB'] = df.baseGci # .apply(lambda x: sharedsites.get(x, x))
+        df['tower'] = (df.mcc.astype(int).astype(str)+'-'+
+                       df.mnc.astype(int).astype(str)+'-'+df.baseGci)
+        df['eNodeB'] = df.tower
 
-        df.dropna(subset=('estDistance',), inplace=True)
-        # Drop zero lat/lon
-        df = df.loc[(df.latitude != 0.0) & (df.longitude != 0.0)]
+        #df[['mcc', 'mnc', 'baseGci']].astype(str)
+        #    lambda x: f'{x.mcc}-{x.mnc}-{x.baseGci}', 1, reduce=True)
+        #df.baseGci # .apply(lambda x: sharedsites.get(x, x))
+
         cellinfo = cellinfo.append(df, ignore_index=True)
 
     cellinfo.drop_duplicates(inplace=True)
     #cellinfo.infer_objects()
 
-    towers = cellinfo.groupby(by=('mcc', 'mnc', 'eNodeB'))
+    for tower in SHARED_TOWERS.keys():
+        mcc, mnc, eNodeB = tower
+        for smcc, smnc, seNodeB in SHARED_TOWERS[tower]:
+            selection = ((cellinfo.mcc == smcc) &
+                         (cellinfo.mnc == smnc) &
+                         (cellinfo.baseGci == seNodeB))
+            cellinfo.loc[selection, 'tower'] = f'{mcc}-{mnc}-{eNodeB}'
+    
+    towers = cellinfo.groupby(by=('tower'))
 
     lat1, lon1 = (90, 200)
     lat2, lon2 = (-90, -200)
