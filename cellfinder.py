@@ -34,6 +34,7 @@ import folium
 import folium.plugins
 import math
 import random
+import os
 
 from scipy.optimize import curve_fit, minimize
 
@@ -43,6 +44,9 @@ import multiprocessing as mp
 #import multiprocessing.dummy as mp
 
 from sharedtowers import SHARED_TOWERS
+
+# Debug tower location guessing logic
+GUESSMAPS = True
 
 ECEF = pyproj.Proj('+proj=geocent +datum=WGS84 +units=m +no_defs')
 LLA = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
@@ -87,7 +91,7 @@ def find_tower_svd(readings, returnAlt=False):
 
     # Check for wrong solution
     dist = haversine((lat, lon), readings[['latitude', 'longitude']].iloc[0,:])
-    if abs(lat) > 90 or abs(lon) > 180:
+    if min(dist) > 1000:
         print(result)
         print(readings)
         print(dist, lat, lon)
@@ -102,43 +106,119 @@ def find_tower_svd(readings, returnAlt=False):
         return (lat, lon)
 
 def find_startpos(readings):
-    minval = readings.estDistance.min()
-    rows = readings[readings.estDistance == minval]
-    return (rows.latitude.mean(), rows.longitude.mean())
+    if 'gci' in readings.columns.values.tolist():
+        # Need to try to make a more educated guess here
+        # selection = (readings.sector == 3)
+        # if selection.any():
+        #     #print(selection)
+        #     readings = readings.loc[selection]
 
-def distance(x, *p):
-    ystar = [haversine(xi, p) for xi in x]
-    return ystar
+        readings = pd.concat([readings]*3,  ignore_index=True)
+
+        bearings = (readings.sector-2)*120
+            
+        # 1 = 120
+        # 2 = 240
+        # 3 = 0
+
+        bearings += np.random.randint(-75, 75, len(bearings))
+        
+        Adict = {'latitude' : readings.latitude.values,
+                 'longitude' : readings.longitude.values,
+                 'distance' : readings.estDistance.values,
+                 'bearing' : bearings}
+        A = pd.DataFrame(Adict)
+        
+        #print(A)
+        locs = A.apply(pointAtDistanceAndBearing, axis=1)
+        #print(locs)
+
+        guess = locs.mean(axis=0)
+        #print('Guessed startpos:', guess.values)
+
+        if GUESSMAPS:
+            tmap = folium.Map(control_scale=True)
+
+            tmap.fit_bounds([[min(readings.latitude.min(), locs.latitude.min()),
+                              min(readings.longitude.min(), locs.longitude.min())],
+                             [max(readings.latitude.max(), locs.latitude.max()),
+                              max(readings.longitude.max(), locs.longitude.max())]
+                             ])
+
+            towers = sorted(readings.tower.drop_duplicates())
+            folium.Marker(guess,
+                          icon=folium.map.Icon(icon='signal', color='red'),
+                          popup=towers[0]).add_to(tmap)
+
+            folium.plugins.HeatMap(readings[['latitude', 'longitude']].values.tolist(),
+                                   radius=10, blur=2,
+                                   gradient={1: 'red'}).add_to(tmap)
+
+            folium.plugins.HeatMap(locs.values.tolist(), radius=10, blur=2,
+                                   gradient={1: 'blue'}).add_to(tmap)
+
+            tmap.save(f'tguess-{towers[0]}.html')
+
+        return guess
+    else:
+        minval = readings.estDistance.min()
+        rows = readings[readings.estDistance == minval]
+        return (rows.latitude.mean(), rows.longitude.mean())
+
+def distance(locations, *x):
+    x, locations = np.deg2rad(x), np.deg2rad(locations)
+
+    diff = locations - x
+
+    a = (np.sin(diff[:,0]/2.0)**2 + np.cos(x[0]) * np.cos(locations[:,0]) *
+         np.sin(diff[:,1]/2.0)**2)
+    c = 2 * np.arcsin(np.sqrt(a))
+    return EarthRadiusAtLatitude(np.rad2deg(x[0]))*c
 
 def find_tower_curve(readings):
     startpos = find_startpos(readings)
 
-    errors = [0.14985*2]*readings.shape[0]
+    errors = [149.85*2]*readings.shape[0]
 
     result, covm = curve_fit(distance,
                              readings[['latitude', 'longitude']].values,
-                             readings['estDistance'].values/1000.0,
+                             readings['estDistance'].values,
                              p0=(startpos[0], startpos[1]),
-                             sigma=errors, absolute_sigma=True,
+                             sigma=errors, absolute_sigma=True, ftol=1e-6,
                              bounds=((-90, -180), (90, 180)))
     return result
 
-def mse(x, locations, distances):
-    mse = 0.0
-    for location, distance in zip(locations, distances):
-        dist = haversine(x, location)
-        mse += (dist - distance)**2
-    return mse/len(distances)
+def sse(x, locations, distances):
+    # Vectorized Haversine distances
+    x, locations = np.deg2rad(x), np.deg2rad(locations)
+
+    diff = locations - x
+
+    a = np.sin(diff[:,0]/2.0)**2 + np.cos(x[0]) * np.cos(locations[:,0]) * np.sin(diff[:,1]/2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    dists = EarthRadiusAtLatitude(np.rad2deg(x[0]))*c
+    
+    sse = ((dists-distances)**2).sum()
+    #print(x, sse)
+    return sse
+
+#def mse(x, locations, distances):
+#    mse = 0.0
+#    for location, distance in zip(locations, distances):
+#        dist = haversine(x, location)
+#        mse += (dist - distance)**2
+#    return mse/len(distances)
 
 def find_tower(readings):
     startpos = find_startpos(readings)
+    #print('Start', startpos)
 
-    result = minimize(mse, startpos,
+    result = minimize(sse, startpos,
                       args=(readings[['latitude', 'longitude']].values,
-                            readings['estDistance'].values/1000.0),
+                            readings['estDistance'].values),
                       method='L-BFGS-B',
-                      bounds=((-90, 90), (-180, 180)),
-                      options={'ftol': 1e-5, 'maxiter': 1e7})
+                      #bounds=((-90.0, 90.0), (-180.0, 180.0)),
+                      options={'ftol': 1e-6, 'maxiter': 1e7})
 
     dist = haversine(startpos, result.x)
     if dist > 100:
@@ -149,7 +229,8 @@ def find_tower(readings):
     return result.x
 
 def pointAtDistanceAndBearing(row):
-    lat1, lon1 = np.deg2rad(row.startpos)
+    lat1 = np.deg2rad(row.latitude)
+    lon1 = np.deg2rad(row.longitude)
     bearing = np.deg2rad(row.bearing)
 
     rad = EarthRadiusAtLatitude(lat1)
@@ -159,25 +240,26 @@ def pointAtDistanceAndBearing(row):
                      math.cos(lat1) * math.sin(dr) * math.cos(bearing))
     lon2 = lon1 + math.atan2(math.sin(bearing) * math.sin(dr) * math.cos(lat1),
                              math.cos(dr) - math.sin(lat1)*math.sin(lat2))
-    return pd.Series([np.rad2deg(lat2), np.rad2deg(lon2)])
+    return pd.Series((np.rad2deg(lat2), np.rad2deg(lon2)),
+                     index=('latitude', 'longitude'))
 
 def threshold_round(a, clip):
     return np.round(a / clip)*clip
 
 def test_find_tower():
-    pos1 = np.array([random.uniform(-90, 90), random.uniform(-180, 180)])
-
-    alt = 120
-
     N = 30
+    alt = 120
     angle_range = 180 # All points within same angle_range degrees
 
+    lat = random.uniform(-90, 90)
+    lon = random.uniform(-180, 180)
+    
     bearings = np.random.random(N)*angle_range + random.uniform(0, 360)
 
     dists = np.random.random(N)*15000
     estdists = threshold_round(dists+np.random.random(N)*600, 149.85)
 
-    Adict = {'startpos' : (pos1,) * N,
+    Adict = {'latitude' : [lat]*N, 'longitude' : [lon]*N,
              'distance' : dists, 'bearing' : bearings}
     A = pd.DataFrame(Adict)
     #print(A)
@@ -191,6 +273,7 @@ def test_find_tower():
     B = pd.DataFrame(Bdict)
     print(B)
 
+    pos1 = np.array((lat, lon))
     print(pos1)
 
     guess = find_tower(B)
@@ -235,19 +318,21 @@ def process_tower(tower, readings):
     bands = '/'.join([f'{x}' for x in bandnums])
     print(eNodeB, bands)
 
-    baseGciList = sorted(readings.eNodeB.drop_duplicates().values)
-    baseGcis = '<br>'.join(baseGciList)
-    
-    readings = readings[['latitude', 'longitude', 'altitude',
-                         'estDistance', 'band']].drop_duplicates()
+    readings = readings[['latitude', 'longitude', 'altitude', 'gci', 'tower',
+                         'eNodeB', 'estDistance', 'band']].drop_duplicates()
     r, c = readings.shape
     if r < 3:
         print(f'Only {r} observation(s); skipping.')
         return None
 
+    baseGciList = sorted(readings.eNodeB.drop_duplicates().values)
+    baseGcis = '<br>'.join(baseGciList)
+    
+    readings['sector'] = readings.gci.apply(lambda x: (int(x, 16) & 0xFF) % 8)
+    
     loc = find_tower(readings)
 
-    check_sanity(loc, readings)
+    #check_sanity(loc, readings)
 
     icolor = icon_color.get(min(bandnums), 'blue')
 
@@ -269,8 +354,10 @@ def process_tower(tower, readings):
     marker.add_to(tmap)
 
     for index, row in readings.iterrows():
-        color = band_color.get(row.band, 'blue')
+        #color = band_color.get(row.band, 'blue')
 
+        color = ['red', 'green', 'blue'][row.sector % 3]
+        
         points.setdefault(color, []).append( (row.latitude,
                                               row.longitude) )
 
@@ -278,10 +365,18 @@ def process_tower(tower, readings):
         folium.plugins.HeatMap(pts, radius=10, blur=2,
                                gradient={1: color}).add_to(tmap)
 
-    tmap.save(f'tower-{eNodeB}.html')
+    filename = f'tower-{eNodeB}.html'
+    tmap.save(filename)
 
-    return (loc, icolor, popup)
+    return (loc, icolor, f'<a target="_blank" href="{filename}">'+popup+'</a>')
 
+def find_closest_tower(tower_locs, location):
+    d = distance(tower_locs[['Location Lat', 'Location Lon']].values,
+                 *location)
+    towerid = tower_locs.iloc[np.argmin(d)].Site
+    print(min(d), towerid)
+    return min(d), towerid
+   
 def plotcells(*files):
     cellinfo = pd.DataFrame()
     for infile in files:
@@ -298,7 +393,7 @@ def plotcells(*files):
 
         # Drop zero lat/lon
         df = df.loc[(df.latitude != 0.0) & (df.longitude != 0.0)]
-        
+
         df.baseGci = df.baseGci.str.pad(6, fillchar='0')
         df.gci = df.gci.str.pad(8, fillchar='0')
 
@@ -311,9 +406,9 @@ def plotcells(*files):
         #df.baseGci # .apply(lambda x: sharedsites.get(x, x))
 
         cellinfo = cellinfo.append(df, ignore_index=True)
+        cellinfo.infer_objects()
 
     cellinfo.drop_duplicates(inplace=True)
-    #cellinfo.infer_objects()
 
     for tower in SHARED_TOWERS.keys():
         mcc, mnc, eNodeB = tower
@@ -328,6 +423,10 @@ def plotcells(*files):
     lat1, lon1 = (90, 200)
     lat2, lon2 = (-90, -200)
 
+    master_tower_locs = None
+    if os.path.exists('towerdb.csv'):
+        master_tower_locs = pd.read_csv('towerdb.csv')
+
     tower_locations = []
     tower_icons = []
     tower_popups = []
@@ -340,13 +439,19 @@ def plotcells(*files):
             if tower is not None:
                 loc, color, popup = tower
                 icon = folium.map.Icon(icon='signal', color=color)
+
+                if master_tower_locs is not None:
+                    towerinfo = find_closest_tower(master_tower_locs, loc)
+                    dist, towerid = towerinfo
+                    if dist < 10000:
+                        popup += f'<br>{towerid}&thinsp;({dist/1000.0:0.3} km)'
                 
                 tower_locations.append(loc)
                 tower_icons.append(icon)
                 tower_popups.append(popup)
 
                 lat1, lon1 = min(loc[0], lat1), min(loc[1], lon1)
-                lat2, lon2 = max(loc[0], lat2), max(loc[1], lon1)
+                lat2, lon2 = max(loc[0], lat2), max(loc[1], lon2)
         
     m = folium.Map(control_scale=True)
     m.fit_bounds([[lat1, lon1], [lat2, lon2]])
