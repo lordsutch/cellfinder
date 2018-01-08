@@ -115,13 +115,17 @@ def find_startpos(readings):
 
         readings = pd.concat([readings]*3,  ignore_index=True)
 
-        bearings = (readings.sector-2)*120
-            
-        # 1 = 120
-        # 2 = 240
-        # 3 = 0
+        bearings = (readings.sector - 1)*120 + 180
 
-        bearings += np.random.randint(-75, 75, len(bearings))
+        bearings += np.random.randint(0, 120, len(bearings))
+        
+        sectors, scounts = np.unique(readings.sector, return_counts=True)
+
+        readings['weight'] = [1.0]*len(bearings)
+        for s, c in zip(sectors, scounts):
+            readings.loc[readings.sector == s, 'weight'] = 1.0/c
+
+        #print(readings.sector, readings.weight)
         
         Adict = {'latitude' : readings.latitude.values,
                  'longitude' : readings.longitude.values,
@@ -133,7 +137,7 @@ def find_startpos(readings):
         locs = A.apply(pointAtDistanceAndBearing, axis=1)
         #print(locs)
 
-        guess = locs.mean(axis=0)
+        guess = np.average(locs, axis=0, weights=readings.weight.values) #locs.mean(axis=0)
         #print('Guessed startpos:', guess.values)
 
         if GUESSMAPS:
@@ -150,13 +154,18 @@ def find_startpos(readings):
                           icon=folium.map.Icon(icon='signal', color='red'),
                           popup=towers[0]).add_to(tmap)
 
-            folium.plugins.HeatMap(readings[['latitude', 'longitude']].values.tolist(),
-                                   radius=10, blur=2,
-                                   gradient={1: 'red'}).add_to(tmap)
+            for sector in sectors:
+                scolor = ['red', 'green', 'blue'][sector % 3]
+                folium.plugins.HeatMap(locs.loc[readings.sector == sector].values.tolist(),
+                                       radius=3, blur=2,
+                                       gradient={1: scolor}).add_to(tmap)
 
-            folium.plugins.HeatMap(locs.values.tolist(), radius=10, blur=2,
-                                   gradient={1: 'blue'}).add_to(tmap)
-
+            for sector in sectors:
+                scolor2 = ['pink', 'lime', 'cyan'][sector % 3]
+                folium.plugins.HeatMap(readings.loc[readings.sector == sector][['latitude', 'longitude']].values.tolist(),
+                                       radius=5, blur=2,
+                                       gradient={1: scolor2}).add_to(tmap)
+            
             tmap.save(f'tguess-{towers[0]}.html')
 
         return guess
@@ -328,7 +337,7 @@ def process_tower(tower, readings):
     baseGciList = sorted(readings.eNodeB.drop_duplicates().values)
     baseGcis = '<br>'.join(baseGciList)
     
-    readings['sector'] = readings.gci.apply(lambda x: (int(x, 16) & 0xFF) % 8)
+    readings['sector'] = readings.gci.apply(lambda x: int(x, 16) % 8)
     
     loc = find_tower(readings)
 
@@ -444,7 +453,7 @@ def plotcells(*files):
                     towerinfo = find_closest_tower(master_tower_locs, loc)
                     dist, towerid = towerinfo
                     if dist < 10000:
-                        popup += f'<br>{towerid}&thinsp;({dist/1000.0:0.3} km)'
+                        popup += f'<br>{towerid} ({dist/1000.0:0.3}&thinsp;km)'
                 
                 tower_locations.append(loc)
                 tower_icons.append(icon)
