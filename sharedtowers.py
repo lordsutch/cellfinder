@@ -2,6 +2,7 @@
 
 SHARED_TOWERS = {}
 
+# S.C. Georgia/E.C. Alabama
 for i in range(0x03A42E, 0x03A437):
     SHARED_TOWERS[(310, 120, f'{i:06X}')] = [
         (310, 120, f'{0x03A42E+0x03A594-i:06X}')]
@@ -55,8 +56,33 @@ SHARED_TOWERS[(310, 120, '03A4CA')] = [(310, 120, '0CA99A')]
 SHARED_TOWERS[(310, 120, '03A4B8')] = [(310, 120, '0CA9AA')]
 
 SHARED_TOWERS[(310, 120, '03400B')] = [(310, 120, '034936')]
+
+# Maybe incorrect?
 SHARED_TOWERS[(310, 120, '03400C')] = [(310, 120, '034956')]
 
 SHARED_TOWERS[(310, 120, '044003')] = [(310, 120, '0444E3')]
+
+# Memphis/N. Mississippi
+for i in range(0x050113, 0x050126):
+    SHARED_TOWERS[(310, 120, f'{i:06X}')] = [
+        (310, 120, f'{0x050113+0x0508B0-i:06X}')]
+
+for i in range(0x050125, 0x050129):
+    SHARED_TOWERS[(310, 120, f'{i:06X}')] = [
+        (310, 120, f'{0x050125+0x05089F-i:06X}')]
+
+for i in range(0x050131, 0x050135):
+    SHARED_TOWERS[(310, 120, f'{i:06X}')] = [
+        (310, 120, f'{0x050131+0x050893-i:06X}')]
+
+for i in range(0x050092, 0x050099):
+    SHARED_TOWERS[(310, 120, f'{i:06X}')] = [
+        (310, 120, f'{0x050922+0x050096-i:06X}')]
+
+#SHARED_TOWERS[(310, 120, '050128')] = [(310, 120, '05089C')]
+SHARED_TOWERS[(310, 120, '050124')] = [(310, 120, '0509AC')]
+
+#SHARED_TOWERS[(310, 120, '050134')] = [(310, 120, '050890')]
+
 
 #print(SHARED_TOWERS)
