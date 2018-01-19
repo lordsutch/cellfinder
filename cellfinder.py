@@ -58,8 +58,9 @@ def ECEFtoLLA(x, y, z):
     lon, lat, alt = pyproj.transform(ECEF, LLA, x, y, z, radians=False)
     return (lat, lon, alt)
 
-def EarthRadiusAtLatitude(lat):
-    rlat = np.deg2rad(lat)
+def EarthRadiusAtLatitude(lat, radians=False):
+    if not radians:
+        rlat = np.deg2rad(lat)
 
     # Refine estimate - stolen from Wikipedia
     a = np.float64(6378137.0)
@@ -182,7 +183,7 @@ def distance(locations, *x):
     a = (np.sin(diff[:,0]/2.0)**2 + np.cos(x[0]) * np.cos(locations[:,0]) *
          np.sin(diff[:,1]/2.0)**2)
     c = 2 * np.arcsin(np.sqrt(a))
-    return EarthRadiusAtLatitude(np.rad2deg(x[0]))*c
+    return EarthRadiusAtLatitude(x[0], radians=True)*c
 
 def find_tower_curve(readings):
     startpos = find_startpos(readings)
@@ -193,8 +194,9 @@ def find_tower_curve(readings):
                              readings[['latitude', 'longitude']].values,
                              readings['estDistance'].values,
                              p0=(startpos[0], startpos[1]),
-                             sigma=errors, absolute_sigma=True, ftol=1e-6,
-                             bounds=((-90, -180), (90, 180)))
+                             # bounds=((-90, -180), (90, 180)),
+                             # sigma=errors, absolute_sigma=True,
+                             ftol=1e-6)
     return result
 
 def sse(x, locations, distances):
@@ -205,11 +207,9 @@ def sse(x, locations, distances):
 
     a = np.sin(diff[:,0]/2.0)**2 + np.cos(x[0]) * np.cos(locations[:,0]) * np.sin(diff[:,1]/2.0)**2
     c = 2 * np.arcsin(np.sqrt(a))
-    dists = EarthRadiusAtLatitude(np.rad2deg(x[0]))*c
+    dists = EarthRadiusAtLatitude(x[0], radians=True)*c
     
-    sse = ((dists-distances)**2).sum()
-    #print(x, sse)
-    return sse
+    return ((dists-distances)**2).sum()
 
 #def mse(x, locations, distances):
 #    mse = 0.0
@@ -242,7 +242,7 @@ def pointAtDistanceAndBearing(row):
     lon1 = np.deg2rad(row.longitude)
     bearing = np.deg2rad(row.bearing)
 
-    rad = EarthRadiusAtLatitude(lat1)
+    rad = EarthRadiusAtLatitude(lat1, radians=True)
 
     dr = row.distance/rad
     lat2 = math.asin(math.sin(lat1) * math.cos(dr) +
