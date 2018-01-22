@@ -396,7 +396,7 @@ def plotcells(*files):
 
         # This is only necessary if you have old CSV files w/o estDistance
         df['estDistance'] = df['timingAdvance'].values*149.85
-        df.loc[df.band == 41, 'estDistance'] -= 19*149.85
+        df.loc[df.band == 41, 'estDistance'] -= 20*149.85
 
         df.dropna(subset=('estDistance',), inplace=True)
 
