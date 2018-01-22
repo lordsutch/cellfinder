@@ -60,14 +60,14 @@ def ECEFtoLLA(x, y, z):
 
 def EarthRadiusAtLatitude(lat, radians=False):
     if not radians:
-        rlat = np.deg2rad(lat)
+        lat = np.deg2rad(lat)
 
     # Refine estimate - stolen from Wikipedia
     a = np.float64(6378137.0)
     b = np.float64(6356752.3)
 
-    rad = np.sqrt(((a*a*np.cos(rlat))**2 + (b*b*np.sin(rlat))**2) /
-                  ((a*np.cos(rlat))**2 + (b*np.sin(rlat))**2))
+    rad = np.sqrt(((a*a*np.cos(lat))**2 + (b*b*np.sin(lat))**2) /
+                  ((a*np.cos(lat))**2 + (b*np.sin(lat))**2))
     return rad
 
 def find_tower_svd(readings, returnAlt=False):
